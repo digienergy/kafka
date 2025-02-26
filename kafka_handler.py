@@ -373,7 +373,7 @@ def write_to_postgresql_db(kafka_topic,inverter_brand, inverter_devicetype, data
             """)
             connection.execute(insert_query, data)
 
-            print(f"{datetime.now()} Inserted data into {schema_name}.{"inverter"}")
+            print(f"{datetime.now()} Inserted data into {schema_name}.inverter")
         return 
 
     if inverter_brand == "goodwe"  and data["errormessage"] != 0:
