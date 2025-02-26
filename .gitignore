@@ -1,0 +1,11 @@
+# 環境變數文件
+.env
+
+# 日誌和暫存文件
+*.log
+*.out
+
+# Python 虛擬環境
+kafka/
+*.pyc
+__pycache__/
