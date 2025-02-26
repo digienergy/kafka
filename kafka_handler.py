@@ -396,7 +396,7 @@ def write_to_postgresql_db(kafka_topic,inverter_brand, inverter_devicetype, data
             """)
             connection.execute(insert_query, data)
 
-            print(f"{datetime.now()} Inserted data into {schema_name}.{"alarm"}")        
+            print(f"{datetime.now()} Inserted data into {schema_name}.alarm")        
 
 
 def start_kafka_consumer():
