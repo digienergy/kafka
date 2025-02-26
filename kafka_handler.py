@@ -51,7 +51,11 @@ def list_kafka_topics():
     global kafka_topic_list
     admin_client = AdminClient({'bootstrap.servers': KAFKA_BROKER})
     metadata = admin_client.list_topics(timeout=10)
-    kafka_topic_list = list(filter(lambda t: not t.startswith("__"), metadata.topics.keys()))
+    
+    kafka_topic_list = [
+        topic for topic in metadata.topics.keys()
+        if not topic.startswith("__") and topic.isdigit()
+    ]
 
 def list_postgres_schemas():
     """列出 PostgreSQL 中所有數字名稱的 Schemas"""
@@ -71,7 +75,7 @@ def setup_postgres_from_kafka():
     print(f"{datetime.now()} setup_postgres_from_kafka kafka_topics:",kafka_topic_list)
     print(f"{datetime.now()} setup_postgres_from_kafka schema_list:",postgres_schema_list)
 
-    for topic in kafka_topic_list:
+    for topic in kafka_topic_list or not topic.isdigit():
         if topic.startswith("__"):  # 忽略 Kafka 內建 Topic
             continue
 
