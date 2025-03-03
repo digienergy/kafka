@@ -51,7 +51,7 @@ def list_kafka_topics():
     global kafka_topic_list
     admin_client = AdminClient({'bootstrap.servers': KAFKA_BROKER})
     metadata = admin_client.list_topics(timeout=10)
-    
+
     kafka_topic_list = [
         topic for topic in metadata.topics.keys()
         if not topic.startswith("__") and topic.isdigit()
@@ -268,6 +268,33 @@ def create_index(schema_name, table_name):
                 connection.execute(create_index_query)
                 print(f"{datetime.now()} Created index '{index_name}' on '{table_name}' (timestamp,serialnumber,errormessage).")
 
+def create_constraints(schema_name, table_name):
+    """為指定資料表新增唯一約束 (UNIQUE) 在 collecttime 欄位"""
+    with engine.connect() as connection:
+        try:
+            # 唯一約束：確保 `collecttime` 不重複
+            constraint_name = f"{table_name}_collecttime_unique"
+
+            # 檢查約束是否已經存在，避免重複建立
+            check_constraint_query = text(f"""
+                SELECT conname 
+                FROM pg_constraint 
+                WHERE conrelid = '{schema_name}.{table_name}'::regclass 
+                AND conname = '{constraint_name}'
+            """)
+            result = connection.execute(check_constraint_query).fetchone()
+
+            if not result:
+                connection.execute(text(f"""
+                    ALTER TABLE "{schema_name}"."{table_name}" 
+                    ADD CONSTRAINT "{constraint_name}" UNIQUE (collecttime)
+                """))
+                print(f"{datetime.now()} Unique constraint added to '{schema_name}.{table_name}' on collecttime.")
+            else:
+                print(f"{datetime.now()} Unique constraint already exists on '{schema_name}.{table_name}'.")
+        except Exception as e:
+            print(f"{datetime.now()} Error adding unique constraint to '{schema_name}.{table_name}': {e}")
+
 
 def consumer_worker():
     """Kafka 消費者持續監聽 Kafka topic 並將數據寫入資料庫"""
@@ -276,7 +303,9 @@ def consumer_worker():
     consumer_config = {
         'bootstrap.servers': KAFKA_BROKER,
         'group.id': 'iot_consumer_group',
-        'auto.offset.reset': 'earliest'
+        'auto.offset.reset': 'earliest',
+        'enable.auto.commit': True,  # ✅ 自動提交 offset
+        'auto.commit.interval.ms': 5000  # ✅ 每 5 秒自動提交
     }
     consumer = Consumer(consumer_config)
 
@@ -323,7 +352,6 @@ def consumer_worker():
 
                 write_to_postgresql_db(kafka_topic, inverter_brand, inverter_devicetype, data)
 
-            consumer.commit()  # 提交 offset，避免重複消費
 
         except KafkaException as e:
             print(f"{datetime.now()} Kafka error: {e}. Retrying in 5 seconds...")
@@ -366,6 +394,7 @@ def write_to_postgresql_db(kafka_topic,inverter_brand, inverter_devicetype, data
     if missing_columns:
         create_columns(schema_name, "inverter", data)  # 創建缺少的欄位
         create_index(schema_name, "inverter")
+        create_constraints(schema_name, "inverter")
         column_cache[schema_name]["inverter"].update(missing_columns)  # 更新快取
 
     if data["errormessage"] == 0:
@@ -388,6 +417,7 @@ def write_to_postgresql_db(kafka_topic,inverter_brand, inverter_devicetype, data
     if missing_columns:
         create_columns(schema_name, "alarm", data)  # 創建缺少的欄位
         create_index(schema_name, "alarm")
+        create_constraints(schema_name, "alarm")
         column_cache[schema_name]["alarm"].update(missing_columns)  # 更新快取
 
     # Default case to insert into PostgreSQL
