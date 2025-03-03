@@ -1,5 +1,6 @@
 from confluent_kafka import Consumer
 from dotenv import load_dotenv
+from influxdb_client import InfluxDBClient, Point, WriteOptions
 import time
 import os
 import json
@@ -23,13 +24,17 @@ load_dotenv()
 KAFKA_BROKER = os.getenv('KAFKA_BROKER')
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# INFLUXDB_HOST = os.getenv("INFLUXDB_HOST", "localhost")
-# INFLUXDB_PORT = int(os.getenv("INFLUXDB_PORT", 8086))
-# INFLUXDB_DB = os.getenv("INFLUXDB_DB", "iot_metrics")
-
 
 engine = create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
+
+# INFLUXDB_URL = os.getenv("INFLUXDB_URL")
+# INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN")
+# INFLUXDB_ORG = os.getenv("INFLUXDB_ORG")
+# INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET")
+
+# client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
+# write_api = client.write_api(write_options=WriteOptions(batch_size=1000, flush_interval=10_000))
 
 kafka_topic_list = []
 postgres_schema_list = []
@@ -60,7 +65,7 @@ def list_kafka_topics():
 def list_postgres_schemas():
     """列出 PostgreSQL 中所有數字名稱的 Schemas"""
     global postgres_schema_list
-    with engine.connect() as connection:
+    with engine.begin() as connection:
         schema_query = text("""
             SELECT schema_name FROM information_schema.schemata
             WHERE schema_name ~ '^[0-9]+$'  -- 只選擇全數字的 schema
@@ -91,7 +96,7 @@ def check_and_update_schema_tables():
     """檢查 PostgreSQL schemas 是否包含 'inverter' 和 'alarm' 表，並更新 column_cache"""
     global column_cache,postgres_schema_list
 
-    with engine.connect() as connection:
+    with engine.begin() as connection:
         for schema in postgres_schema_list:
             # 查詢該 schema 下的 tables
             table_query = text(f"""
@@ -185,7 +190,7 @@ def create_columns(schema_name, table_name, data):
         
     # 使用連接取得當前欄位
     if table_name not in column_cache[schema_name]:
-        with engine.connect() as connection:
+        with engine.begin() as connection:
             existing_columns = {row[0] for row in connection.execute(text(f"""
                 SELECT column_name FROM information_schema.columns 
                 WHERE table_schema = '{schema_name}' AND table_name = '{table_name}'
@@ -198,7 +203,7 @@ def create_columns(schema_name, table_name, data):
     if not new_columns:
         return  # 如果沒有新欄位，直接返回
         
-    with engine.connect() as connection:
+    with engine.begin() as connection:
         for key in new_columns:
             value = data[key]
             if key == "errormessage" or key == "warningcode":  
@@ -223,7 +228,6 @@ def create_columns(schema_name, table_name, data):
         # 更新快取，避免下次重複查詢
         column_cache[schema_name][table_name].update(new_columns)
 
-        connection.commit()
 
 def create_index(schema_name, table_name):
     """
@@ -231,7 +235,7 @@ def create_index(schema_name, table_name):
     """
     if table_name == "inverter":
         index_name = f"{table_name}_timestamp_serialnumber_idx"
-        with engine.connect() as connection:
+        with engine.begin() as connection:
             # 檢查索引是否存在
             check_index_query = text(f"""
                 SELECT 1 FROM pg_indexes 
@@ -250,7 +254,7 @@ def create_index(schema_name, table_name):
                 print(f"{datetime.now()} Created index '{index_name}' on '{table_name}' (timestamp,serialnumber).")
     else:
         index_name = f"{table_name}_timestamp_serialnumber_errormessage_idx"
-        with engine.connect() as connection:
+        with engine.begin() as connection:
             # 檢查索引是否存在
             check_index_query = text(f"""
                 SELECT 1 FROM pg_indexes 
@@ -270,7 +274,7 @@ def create_index(schema_name, table_name):
 
 def create_constraints(schema_name, table_name):
     """為指定資料表新增唯一約束 (UNIQUE) 在 collecttime 欄位"""
-    with engine.connect() as connection:
+    with engine.begin()as connection:
         try:
             # 唯一約束：確保 `collecttime` 不重複
             constraint_name = f"{table_name}_collecttime_unique"
@@ -287,8 +291,9 @@ def create_constraints(schema_name, table_name):
             if not result:
                 connection.execute(text(f"""
                     ALTER TABLE "{schema_name}"."{table_name}" 
-                    ADD CONSTRAINT "{constraint_name}" UNIQUE (collecttime)
+                    ADD CONSTRAINT "{constraint_name}" UNIQUE ("collecttime")
                 """))
+                
                 print(f"{datetime.now()} Unique constraint added to '{schema_name}.{table_name}' on collecttime.")
             else:
                 print(f"{datetime.now()} Unique constraint already exists on '{schema_name}.{table_name}'.")
@@ -304,8 +309,8 @@ def consumer_worker():
         'bootstrap.servers': KAFKA_BROKER,
         'group.id': 'iot_consumer_group',
         'auto.offset.reset': 'earliest',
-        'enable.auto.commit': True,  # ✅ 自動提交 offset
-        'auto.commit.interval.ms': 5000  # ✅ 每 5 秒自動提交
+        'enable.auto.commit': True,  # 自動提交 offset
+        'auto.commit.interval.ms': 5000  # 每 5 秒自動提交
     }
     consumer = Consumer(consumer_config)
 
@@ -344,7 +349,7 @@ def consumer_worker():
             inverter_brand = data.pop("inverter_brand", None)  # Remove "inverter_brand" from data
             inverter_devicetype = data.pop("devicetype", None)  # Remove "inverter_devicetype"
 
-            #write_to_influx_db(kafka_topic, inverter_brand, inverter_devicetype, data)
+            # write_to_influx_db(kafka_topic, inverter_brand, inverter_devicetype, data)
             write_to_postgresql_db(kafka_topic, inverter_brand, inverter_devicetype, data)
             error_message = random.choice(list(GoodWe(devicetype="GW50KN-MT").ERROR_MESSAGE_MAP.keys())) #建立錯誤假資料
             data["errormessage"] = error_message
@@ -360,8 +365,7 @@ def consumer_worker():
             print(f"{datetime.now()} Unexpected error in Kafka consumer: {e}")
 
 # 🚀 InfluxDB 資料寫入
-def write_to_influx_db(data):
-    pass
+def write_to_influx_db(kafka_topic, inverter_brand, inverter_devicetype, data):
     try:
         influx_json = [{
             "measurement": "sensor_data",
@@ -403,6 +407,7 @@ def write_to_postgresql_db(kafka_topic,inverter_brand, inverter_devicetype, data
                 INSERT INTO "{schema_name}"."{"inverter"}" 
                 ({', '.join([f'"{k}"' for k in data.keys()])}) 
                 VALUES ({', '.join([f':{k}' for k in data.keys()])})
+                ON CONFLICT ("collecttime") DO NOTHING
             """)
             connection.execute(insert_query, data)
 
@@ -427,6 +432,7 @@ def write_to_postgresql_db(kafka_topic,inverter_brand, inverter_devicetype, data
                 INSERT INTO "{schema_name}"."{"alarm"}" 
                 ({', '.join([f'"{k}"' for k in data.keys()])}) 
                 VALUES ({', '.join([f':{k}' for k in data.keys()])})
+                ON CONFLICT ("collecttime") DO NOTHING
             """)
             connection.execute(insert_query, data)
 
